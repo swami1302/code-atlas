@@ -1,0 +1,29 @@
+name: code-atlas
+
+services:
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    command: sleep infinity # stay up idle; start the server yourself with exec
+    init: true # lets `docker compose down` stop sleep instantly
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app # live code
+      - /app/.venv # keep the container's Linux venv, not your Mac's
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    command: sleep infinity
+    init: true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app # live code
+      - /app/node_modules # keep the container's Linux node_modules
+      - /app/.next # keep the container's build cache
+    depends_on:
+      - backend

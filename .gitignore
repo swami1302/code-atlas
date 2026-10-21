@@ -1,0 +1,7 @@
+# Secrets: never commit real env files, only the template
+.env
+.env.*
+!.env.example
+
+# macOS folder metadata
+.DS_Store
