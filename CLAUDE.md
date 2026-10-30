@@ -21,7 +21,7 @@ This is a resume project. The user must understand every piece well enough to ex
 - Postgres on Neon and Redis on Upstash, for development as well as deployment.
 - Redis + BullMQ are kept on purpose, to learn the infrastructure. Postgres `index_jobs` stays the source of truth for job state.
 - Docker Compose grows by phase. Phase 0: `backend` + `frontend` services only.
-- In dev, compose overrides the containers' command with `sleep infinity`. The user starts the servers manually with `docker compose exec`.
+- In dev, both containers auto-start their servers from the Dockerfile `dev` target's `CMD` (uvicorn `--reload`, `pnpm dev`). Logs via `docker compose logs -f <service>`.
 - Dockerfiles are multi-stage, with a `dev` target (used by compose) and a `prod` target (for Phase 6).
 - Only install packages when a phase needs them. Currently the backend has only `fastapi[standard]`.
 - Schema fixes agreed: `snapshot_id` on `chunks`, a separate `chunk_embeddings` table (untyped `vector`, one partial HNSW index per model), keyword search with the `simple` config and Python-side identifier splitting.

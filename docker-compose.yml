@@ -5,8 +5,6 @@ services:
     build:
       context: ./backend
       target: dev
-    command: sleep infinity # stay up idle; start the server yourself with exec
-    init: true # lets `docker compose down` stop sleep instantly
     ports:
       - "8000:8000"
     volumes:
@@ -17,8 +15,6 @@ services:
     build:
       context: ./frontend
       target: dev
-    command: sleep infinity
-    init: true
     ports:
       - "3000:3000"
     volumes:
