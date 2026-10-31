@@ -23,5 +23,12 @@ This is a resume project. The user must understand every piece well enough to ex
 - Docker Compose grows by phase. Phase 0: `backend` + `frontend` services only.
 - In dev, both containers auto-start their servers from the Dockerfile `dev` target's `CMD` (uvicorn `--reload`, `pnpm dev`). Logs via `docker compose logs -f <service>`.
 - Dockerfiles are multi-stage, with a `dev` target (used by compose) and a `prod` target (for Phase 6).
-- Only install packages when a phase needs them. Currently the backend has only `fastapi[standard]`.
+- Only install packages when a phase needs them. Backend: `fastapi[standard]`, `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `bullmq`; dev: `ruff`. Frontend dev adds `prettier`. No pytest yet (add when real logic arrives in Phase 1).
+- Install packages inside the container (`docker compose exec backend uv add ...`) so the lockfile and the container venv stay in sync.
+- Config: `backend/config.py` (`Settings`, pydantic-settings) reads `backend/.env`; every new variable goes in `Settings` and `.env.example`. `DATABASE_URL` uses `postgresql+asyncpg://`, the direct Neon host and `?ssl=require`; `REDIS_URL` uses `rediss://`.
+- Database: `backend/db.py` holds one async engine (`pool_pre_ping=True`) and `SessionLocal`. Add a `get_session` FastAPI dependency when the first real route needs it.
+- Migrations: Alembic in `backend/migrations/` (async template, URL from `settings`). The first migration only enables pgvector; tables are added in the phase that uses them, starting in Phase 1.
+- BullMQ (Python, 3.4.6) verified on Upstash: retries, exponential backoff, `job.updateProgress` via `QueueEvents`, graceful `worker.close()`.
+- Pre-commit: root `package.json` holds husky + lint-staged only (no Node services planned). The hook runs on the host: ruff for `backend/`, ESLint + Prettier for `frontend/`.
+- Neon: a single branch is fine (resume project, no dev/prod branch split).
 - Schema fixes agreed: `snapshot_id` on `chunks`, a separate `chunk_embeddings` table (untyped `vector`, one partial HNSW index per model), keyword search with the `simple` config and Python-side identifier splitting.
