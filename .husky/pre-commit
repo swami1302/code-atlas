@@ -1,0 +1,5 @@
+# Runs on every `git commit` (on the host, not in Docker).
+# lint-staged fixes only the staged files, re-stages the fixes,
+# and blocks the commit if anything can't be auto-fixed.
+# Rules per file type live in the root package.json under "lint-staged".
+pnpm exec lint-staged

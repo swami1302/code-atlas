@@ -1,0 +1,25 @@
+{
+  "name": "code-atlas",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0"
+  },
+  "lint-staged": {
+    "backend/**/*.py": [
+      "uv run --directory backend ruff check --fix",
+      "uv run --directory backend ruff format"
+    ],
+    "frontend/**/*.{ts,tsx,js,jsx,mjs}": [
+      "pnpm --dir frontend exec eslint --fix",
+      "pnpm --dir frontend exec prettier --write"
+    ],
+    "frontend/**/*.{json,css,md}": [
+      "pnpm --dir frontend exec prettier --write"
+    ]
+  }
+}

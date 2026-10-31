@@ -3,5 +3,8 @@
 .env.*
 !.env.example
 
+# Root tooling (husky)
+node_modules/
+
 # macOS folder metadata
 .DS_Store
