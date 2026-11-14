@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Backend log files (written by backend/log.py)
+backend/logs/
+
 # Root tooling (husky)
 node_modules/
 

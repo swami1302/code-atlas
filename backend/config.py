@@ -7,6 +7,8 @@ class Settings(BaseSettings):
 
     database_url: str
     redis_url: str
+    # DEBUG, INFO, WARNING, ERROR; optional, defaults to INFO
+    log_level: str = "INFO"
 
 
 settings = Settings()

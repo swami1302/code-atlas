@@ -11,6 +11,18 @@ services:
       - ./backend:/app # live code
       - /app/.venv # keep the container's Linux venv, not your Mac's
 
+  # Same image and code as the API, different command: runs indexing jobs from BullMQ.
+  # watchfiles restarts it on code changes, like uvicorn --reload does for the API.
+  worker:
+    build:
+      context: ./backend
+      target: dev
+    # --filter python: only .py changes restart it (not the log file it writes)
+    command: watchfiles --filter python "python worker.py"
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+
   frontend:
     build:
       context: ./frontend
@@ -23,3 +35,20 @@ services:
       - /app/.next # keep the container's build cache
     depends_on:
       - backend
+
+  # BullMQ dashboard (Node-only tool); reads queues straight from Redis
+  bullstudio:
+    build:
+      # Installed once at build time, not on every start
+      dockerfile_inline: |
+        FROM node:22-alpine
+        RUN npm install -g bullstudio@2.5.4
+        # The bullstudio CLI forces HOST=localhost, which Docker can't forward to,
+        # so we start its server file directly and listen on all interfaces
+        ENV HOST=0.0.0.0 \
+            PORT=4000 \
+            BULLSTUDIO_CLIENT_DIR=/usr/local/lib/node_modules/bullstudio/dist/client
+        CMD ["node", "/usr/local/lib/node_modules/bullstudio/dist/server/production.js"]
+    env_file: ./backend/.env # REDIS_URL
+    ports:
+      - "127.0.0.1:4000:4000" # no auth, so only reachable from this machine

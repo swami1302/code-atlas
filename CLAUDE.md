@@ -13,6 +13,9 @@ This is a resume project. The user must understand every piece well enough to ex
 - For each step, explain what it does and why, briefly, so the user can explain it later.
 - Do not over-complicate. Add a tool, package, or service only in the phase that needs it.
 - Do not create files or folders unless the user asks for it in that turn.
+- Decide yourself when confident (roughly 80%+) and state the decision in the explanation; plans can be revisited later. Ask only when genuinely unsure (roughly below 60%).
+- Any question for the user (from any skill or plugin) goes through the AskUserQuestion tool, never as plain text in a reply.
+- After every code edit, explain the code: what each part does and why, in words the user can repeat in an interview. This is a resume project; being able to explain it is the end goal.
 
 ## Decisions so far
 
