@@ -93,12 +93,14 @@ async def add_repo(
     await session.commit()
 
     # Only after the commit, so the worker never gets a job whose row isn't saved.
-    # A queued job goes to BullMQ every time: if Redis was down on the first try,
-    # re-submitting fixes it, and BullMQ ignores the duplicate if it's already there.
-    if job.state == "queued":
-        await enqueue_index(snapshot_id)
+    # Every unfinished job goes to BullMQ again; BullMQ ignores the jobId while that
+    # job is still waiting, running or between retries. So a re-submit heals a job
+    # lost from Redis: Redis was down at enqueue, or a killed worker left the row
+    # stuck at processing after BullMQ failed the job as stalled.
     if job.state == "completed":
         response.status_code = status.HTTP_200_OK
+    else:
+        await enqueue_index(snapshot_id)
 
     logger.info(
         "%s/%s at %s: job %s (snapshot %s)",

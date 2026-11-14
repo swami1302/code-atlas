@@ -1,9 +1,13 @@
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
 GITHUB_API = "https://api.github.com"
+
+# Protects the worker's disk and memory from huge repositories
+MAX_TARBALL_BYTES = 200_000_000
 
 # https://github.com/owner/repo, optionally with www., .git or a trailing slash
 GITHUB_URL = re.compile(
@@ -45,6 +49,32 @@ async def resolve_repo(url: str) -> RepoRef:
 
     # Use GitHub's spelling of owner/name (the URL may differ in case)
     return RepoRef(repo["owner"]["login"], repo["name"], branch, commit["sha"])
+
+
+async def download_tarball(owner: str, name: str, sha: str, dest: Path) -> int:
+    """Stream the repository at one commit (.tar.gz) into dest; returns its size in
+    bytes. Raises RepoError when retrying can't help (repo gone/private, too large);
+    network and other HTTP errors pass through, so the job is retried."""
+    url = f"{GITHUB_API}/repos/{owner}/{name}/tarball/{sha}"
+    size = 0
+    # follow_redirects: GitHub answers 302 to codeload.github.com, which serves the file
+    async with (
+        httpx.AsyncClient(follow_redirects=True, timeout=60) as client,
+        client.stream("GET", url) as response,
+    ):
+        if response.status_code == 404:
+            raise RepoError("Repository not found, or it is private")
+        response.raise_for_status()
+        # Written chunk by chunk: the archive never sits in memory as a whole
+        with dest.open("wb") as file:
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > MAX_TARBALL_BYTES:
+                    raise RepoError(
+                        f"Repository is larger than {MAX_TARBALL_BYTES // 1_000_000} MB"
+                    )
+                file.write(chunk)
+    return size
 
 
 async def _get(client: httpx.AsyncClient, path: str) -> dict:

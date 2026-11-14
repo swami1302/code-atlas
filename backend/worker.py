@@ -3,24 +3,18 @@ import logging
 import signal
 from uuid import UUID
 
-from bullmq import Job, Worker
+from bullmq import Job, UnrecoverableError, Worker
 from sqlalchemy import update
 
 from config import settings
 from db import SessionLocal
+from indexing import index_snapshot
 from jobs import INDEX_QUEUE
 from log import setup_logging
 from models import IndexJob
 
 setup_logging("worker")
 logger = logging.getLogger(__name__)
-
-
-async def index_snapshot(snapshot_id: UUID) -> None:
-    # Placeholder: the real indexing (tarball, chunks, embeddings) replaces this
-    # and moves to its own module in the next steps.
-    logger.info("Indexing snapshot %s (placeholder)", snapshot_id)
-    await asyncio.sleep(2)
 
 
 async def set_job(snapshot_id: UUID, **values) -> None:
@@ -45,7 +39,8 @@ async def process(job: Job, token: str) -> None:
     except Exception as e:
         # attemptsMade = failures before this run, so +1 is this run's number
         attempt = job.attemptsMade + 1
-        last = attempt >= job.attempts
+        # UnrecoverableError: BullMQ skips the remaining retries, so it's final too
+        last = attempt >= job.attempts or isinstance(e, UnrecoverableError)
         # Only the last failure is final; until then the row stays processing
         await set_job(
             snapshot_id,
