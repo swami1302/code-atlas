@@ -69,6 +69,37 @@ class RepoSnapshot(Base):
     )
 
 
+class Chunk(Base):
+    """One searchable piece of a file in one snapshot: a function, method or class,
+    a run of loose code, or a few paragraphs of a doc. The unit of search and
+    citation; its vector will live in chunk_embeddings."""
+
+    __tablename__ = "chunks"
+    # Chunks never overlap, so only one starts on a given line of a file. The index
+    # (snapshot_id first) also serves "all chunks of this snapshot": every search
+    # and the delete before a retry filter on it.
+    __table_args__ = (UniqueConstraint("snapshot_id", "path", "start_line"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=UUIDV7)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("repo_snapshots.id", ondelete="CASCADE")
+    )
+    path: Mapped[str] = mapped_column(Text)  # inside the repo, e.g. backend/worker.py
+    language: Mapped[str] = mapped_column(String(20))
+    # 1-based, inclusive: the citation backend/worker.py:20-26
+    start_line: Mapped[int]
+    end_line: Mapped[int]
+    # e.g. "set_job" or "Context.__init__"; NULL for loose code and docs
+    symbol: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str | None] = mapped_column(String(20))  # function, method, class, ...
+    # Only on pieces 2+ of a split function: its def line(s), which those pieces lack
+    signature: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)  # the exact lines, shown in citations
+    # sha256 hex of the text that gets embedded (path > symbol, signature, content):
+    # the same hash in a later commit means the existing vector is reused
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+
 JOB_STATES = ("queued", "processing", "completed", "failed")
 
 

@@ -14,7 +14,15 @@ This is a resume project. The user must understand every piece well enough to ex
 - Do not over-complicate. Add a tool, package, or service only in the phase that needs it.
 - Do not create files or folders unless the user asks for it in that turn.
 - Decide yourself when confident (roughly 80%+) and state the decision in the explanation; plans can be revisited later. Ask only when genuinely unsure (roughly below 60%).
-- Any question for the user (from any skill or plugin) goes through the AskUserQuestion tool, never as plain text in a reply.
+- Use the AskUserQuestion tool only for real design or functionality decisions you are unsure about (below roughly 60%), e.g. while architecting a plan. Never use it for routine questions like "start the next step?", "go ahead?" or "commit first?": end the reply with the proposed next step as plain text and stop. The user often asks several questions about earlier parts before moving on; question popups interrupt that.
+- Skills to use without being asked:
+  - Planning a feature or step: `/architect`.
+  - Reviewing code or a plan: `/ponytail:ponytail-review`.
+  - Auditing the repo: `/ponytail:ponytail-audit`.
+  - Fixing something that broke or went wrong: `/recover`.
+  - After building any UI component: `/imprint`.
+- Don't run ruff by hand after edits: the pre-commit hook runs it on commit.
+- Never touch Alembic migrations: do not generate (`alembic revision`), edit, format, apply (`alembic upgrade`) or roll back (`alembic downgrade`) them. Change the models only, then give the user the exact commands to run and what to check after each one.
 - After every code edit, explain the code: what each part does and why, in words the user can repeat in an interview. This is a resume project; being able to explain it is the end goal.
 
 ## Decisions so far

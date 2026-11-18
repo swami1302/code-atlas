@@ -9,6 +9,7 @@ from uuid import UUID
 from bullmq import UnrecoverableError
 from sqlalchemy import select
 
+from chunking import Chunk, chunk_file
 from db import SessionLocal
 from github import RepoError, download_tarball
 from models import Repository, RepoSnapshot
@@ -95,6 +96,34 @@ def classify(rel: PurePosixPath, size: int) -> str | None:
     return NAMED_FILES.get(name) or LANGUAGES.get(rel.suffix.lower())
 
 
+def read_text(path: Path) -> str | None:
+    """The file as text, or None when it isn't really text: a NUL byte or invalid
+    UTF-8 means binary data with a code extension. Postgres text columns reject
+    NUL, so these files can't be stored as chunks anyway."""
+    data = path.read_bytes()
+    if b"\x00" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def chunk_files(
+    root: Path, files: list[tuple[str, str]]
+) -> list[tuple[str, str, Chunk]]:
+    """(path, language, chunk) for every kept file. Blocking disk and CPU work:
+    called through asyncio.to_thread."""
+    chunks = []
+    for rel, language in files:
+        text = read_text(root / rel)
+        if text is None:
+            logger.info("Skipped %s: not UTF-8 text", rel)
+            continue
+        chunks += [(rel, language, c) for c in chunk_file(language, text)]
+    return chunks
+
+
 def unpack(archive: Path, dest: Path) -> Path:
     """Extract the tarball into dest and return the repo root folder.
     Blocking disk work: called through asyncio.to_thread."""
@@ -146,6 +175,17 @@ async def index_snapshot(snapshot_id: UUID) -> None:
             total,
             len(files),
             dict(Counter(language for _, language in files)),
+        )
+
+        chunks = await asyncio.to_thread(chunk_files, root, files)
+        sizes = [len(chunk.content) for _, _, chunk in chunks]
+        # max/avg size show whether MAX_CHARS needs tuning
+        logger.info(
+            "Chunked into %d chunks: %s; max %d chars, avg %d",
+            len(chunks),
+            dict(Counter(language for _, language, _ in chunks)),
+            max(sizes, default=0),
+            sum(sizes) // max(len(sizes), 1),
         )
 
 
