@@ -220,6 +220,14 @@ def make(lines: list[str], start: int, end: int, name, kind) -> Chunk:
     return Chunk(start + 1, end + 1, "\n".join(lines[start : end + 1]), name, kind)
 
 
+def embed_text(path: str, chunk: Chunk) -> str:
+    """What gets embedded for a chunk: a header saying where it lives, the
+    signature it lacks (if split), then its lines. content_hash is taken over
+    this text, so it changes whenever the embedding would."""
+    header = f"{path} > {chunk.symbol}" if chunk.symbol else path
+    return "\n".join(filter(None, [header, chunk.signature, chunk.content]))
+
+
 if __name__ == "__main__":
     # Self-check: python chunking.py
 
@@ -292,4 +300,10 @@ class A { public function m() {} }
     doc = "\n\n".join("word " * 80 for _ in range(10))
     assert all(len(c.content) <= MAX_CHARS for c in chunk_file("markdown", doc))
     assert chunk_file("python", "") == []
+
+    # Embed text: header, then the signature only when the chunk lacks it
+    assert embed_text("a.py", pieces[1]).startswith(
+        "a.py > big\ndef big(\n    a,\n):\n"
+    )
+    assert embed_text("README.md", Chunk(1, 1, "# Hi")) == "README.md\n# Hi"
     print("chunking: ok")

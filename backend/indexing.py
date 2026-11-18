@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import tarfile
 import tempfile
@@ -7,12 +8,14 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from bullmq import UnrecoverableError
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select
 
-from chunking import Chunk, chunk_file
+# A module import: chunking.Chunk (a piece of a file) would clash with models.Chunk
+# (its table row)
+import chunking
 from db import SessionLocal
 from github import RepoError, download_tarball
-from models import Repository, RepoSnapshot
+from models import Chunk, Repository, RepoSnapshot
 
 # The indexing pipeline for one snapshot. worker.py only handles the queue and job
 # state; everything about turning a commit into searchable data lives here.
@@ -111,7 +114,7 @@ def read_text(path: Path) -> str | None:
 
 def chunk_files(
     root: Path, files: list[tuple[str, str]]
-) -> list[tuple[str, str, Chunk]]:
+) -> list[tuple[str, str, chunking.Chunk]]:
     """(path, language, chunk) for every kept file. Blocking disk and CPU work:
     called through asyncio.to_thread."""
     chunks = []
@@ -120,8 +123,37 @@ def chunk_files(
         if text is None:
             logger.info("Skipped %s: not UTF-8 text", rel)
             continue
-        chunks += [(rel, language, c) for c in chunk_file(language, text)]
+        chunks += [(rel, language, c) for c in chunking.chunk_file(language, text)]
     return chunks
+
+
+async def save_chunks(
+    snapshot_id: UUID, chunks: list[tuple[str, str, chunking.Chunk]]
+) -> None:
+    """Replace this snapshot's chunk rows in one transaction: all rows land or none.
+    Deleting first makes a retry safe after an attempt that crashed halfway."""
+    rows = [
+        {
+            "snapshot_id": snapshot_id,
+            "path": path,
+            "language": language,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "symbol": chunk.symbol,
+            "kind": chunk.kind,
+            "signature": chunk.signature,
+            "content": chunk.content,
+            "content_hash": hashlib.sha256(
+                chunking.embed_text(path, chunk).encode()
+            ).hexdigest(),
+        }
+        for path, language, chunk in chunks
+    ]
+    async with SessionLocal() as session:
+        await session.execute(delete(Chunk).where(Chunk.snapshot_id == snapshot_id))
+        if rows:  # a bulk insert needs at least one row (a repo of only binaries)
+            await session.execute(insert(Chunk), rows)
+        await session.commit()
 
 
 def unpack(archive: Path, dest: Path) -> Path:
@@ -187,6 +219,10 @@ async def index_snapshot(snapshot_id: UUID) -> None:
             max(sizes, default=0),
             sum(sizes) // max(len(sizes), 1),
         )
+
+    # Outside the with block: the temp folder is no longer needed
+    await save_chunks(snapshot_id, chunks)
+    logger.info("Saved %d chunks", len(chunks))
 
 
 if __name__ == "__main__":
