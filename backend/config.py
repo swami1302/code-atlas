@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     redis_url: str
     # DEBUG, INFO, WARNING, ERROR; optional, defaults to INFO
     log_level: str = "INFO"
+    # Google AI Studio key for the Gemini embedding API
+    gemini_api_key: str
 
 
 settings = Settings()

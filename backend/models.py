@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -98,6 +99,23 @@ class Chunk(Base):
     # sha256 hex of the text that gets embedded (path > symbol, signature, content):
     # the same hash in a later commit means the existing vector is reused
     content_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ChunkEmbedding(Base):
+    """The vector for one embed text under one model. Keyed by content_hash, not
+    by chunk: every chunk with the same text (in any snapshot or repo) shares one
+    row, so unchanged code is never embedded twice. No FK to chunks for the same
+    reason: there is no single parent row."""
+
+    __tablename__ = "chunk_embeddings"
+
+    content_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Model name + size, e.g. "gemini-embedding-2:1536": a new model or size gets
+    # its own rows instead of overwriting these
+    model: Mapped[str] = mapped_column(String(50), primary_key=True)
+    # Untyped vector (no fixed size): one column holds every model's vectors.
+    # Search indexes are per model (Phase 2) and cast to that model's size.
+    embedding: Mapped[list[float]] = mapped_column(Vector())
 
 
 JOB_STATES = ("queued", "processing", "completed", "failed")

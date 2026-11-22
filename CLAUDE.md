@@ -42,4 +42,6 @@ This is a resume project. The user must understand every piece well enough to ex
 - BullMQ (Python, 3.4.6) verified on Upstash: retries, exponential backoff, `job.updateProgress` via `QueueEvents`, graceful `worker.close()`.
 - Pre-commit: root `package.json` holds husky + lint-staged only (no Node services planned). The hook runs on the host: ruff for `backend/`, ESLint + Prettier for `frontend/`.
 - Neon: a single branch is fine (resume project, no dev/prod branch split).
+- Product direction: agentic RAG + MCP. Three tools (`search_code`, `read_file`, `grep`), all reading Postgres chunks; one hand-written agent loop (no framework) where single-shot RAG and the grep-only agent are the same loop with fewer tools; an MCP server (official `mcp` SDK, in FastAPI, public repos only) exposes the same tools. The agent calls tools in-process, not through MCP.
+- Embeddings: Google `gemini-embedding-2` at 1536 dims (model key `"gemini-embedding-2:1536"`) via `google-genai`; `GEMINI_API_KEY` in `backend/.env`. Free tier, so public repos only. A local model (jina-embeddings-v2-base-code) comes in a later phase for the evaluation comparison.
 - Schema fixes agreed: `snapshot_id` on `chunks`, a separate `chunk_embeddings` table (untyped `vector`, one partial HNSW index per model), keyword search with the `simple` config and Python-side identifier splitting.

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import itertools
 import logging
 import tarfile
 import tempfile
@@ -8,14 +9,16 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from bullmq import UnrecoverableError
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, exists, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # A module import: chunking.Chunk (a piece of a file) would clash with models.Chunk
 # (its table row)
 import chunking
+import embedding
 from db import SessionLocal
 from github import RepoError, download_tarball
-from models import Chunk, Repository, RepoSnapshot
+from models import Chunk, ChunkEmbedding, Repository, RepoSnapshot
 
 # The indexing pipeline for one snapshot. worker.py only handles the queue and job
 # state; everything about turning a commit into searchable data lives here.
@@ -143,9 +146,7 @@ async def save_chunks(
             "kind": chunk.kind,
             "signature": chunk.signature,
             "content": chunk.content,
-            "content_hash": hashlib.sha256(
-                chunking.embed_text(path, chunk).encode()
-            ).hexdigest(),
+            "content_hash": content_hash(chunking.embed_text(path, chunk)),
         }
         for path, language, chunk in chunks
     ]
@@ -154,6 +155,53 @@ async def save_chunks(
         if rows:  # a bulk insert needs at least one row (a repo of only binaries)
             await session.execute(insert(Chunk), rows)
         await session.commit()
+
+
+def content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+async def embed_chunks(
+    snapshot_id: UUID, chunks: list[tuple[str, str, chunking.Chunk]]
+) -> None:
+    """Give every chunk of this snapshot a vector under the current model. Only
+    texts without one are sent to the API: unchanged code from an earlier snapshot
+    (or another repo) reuses its row. Each batch commits on its own, so a retry
+    after a crash resumes where it stopped instead of paying for it all again."""
+    texts = {
+        content_hash(text): text
+        for text in (chunking.embed_text(path, chunk) for path, _, chunk in chunks)
+    }
+    async with SessionLocal() as session:
+        # Hashes of this snapshot with no row yet for this model. Asked in SQL
+        # (NOT EXISTS) rather than by sending every hash: one parameter, any size.
+        missing = (
+            await session.scalars(
+                select(Chunk.content_hash)
+                .distinct()
+                .where(Chunk.snapshot_id == snapshot_id)
+                .where(
+                    ~exists().where(
+                        ChunkEmbedding.content_hash == Chunk.content_hash,
+                        ChunkEmbedding.model == embedding.MODEL_KEY,
+                    )
+                )
+            )
+        ).all()
+        for batch in itertools.batched(missing, embedding.BATCH_SIZE):
+            vectors = await embedding.embed_documents([texts[h] for h in batch])
+            rows = [
+                {"content_hash": h, "model": embedding.MODEL_KEY, "embedding": v}
+                for h, v in zip(batch, vectors, strict=True)
+            ]
+            # DO NOTHING: another job may have stored the same text meanwhile
+            await session.execute(
+                pg_insert(ChunkEmbedding).on_conflict_do_nothing(), rows
+            )
+            await session.commit()
+    logger.info(
+        "Embedded %d new texts, reused %d", len(missing), len(texts) - len(missing)
+    )
 
 
 def unpack(archive: Path, dest: Path) -> Path:
@@ -223,6 +271,7 @@ async def index_snapshot(snapshot_id: UUID) -> None:
     # Outside the with block: the temp folder is no longer needed
     await save_chunks(snapshot_id, chunks)
     logger.info("Saved %d chunks", len(chunks))
+    await embed_chunks(snapshot_id, chunks)
 
 
 if __name__ == "__main__":

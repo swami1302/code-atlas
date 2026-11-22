@@ -7,7 +7,10 @@ title: Codebase Intelligence Assistant --- Interactive Project Plan
 
 > **Goal:** Build a portfolio-ready Full-Stack AI application that helps
 > developers understand a GitHub repository through source-grounded
-> answers, code citations, and measurable RAG evaluation.
+> answers, code citations, and measurable RAG evaluation. An AI agent
+> answers by calling retrieval tools over the index (agentic RAG), and
+> the same tools are exposed over MCP so other AI assistants (Claude
+> Code, Claude Desktop, Cursor) can query indexed repositories.
 
 **Project status:** Planning\
 **Primary audience:** AI Engineer / Full-Stack AI Engineer recruiters\
@@ -45,8 +48,11 @@ and say when the repository does not contain enough information.
     text splitting.
 -   [ ] Hybrid retrieval: vector similarity + identifier-aware keyword
     search, fused with Reciprocal Rank Fusion (RRF).
--   [ ] Agentic retrieval (LLM tool loop over search/grep/read_file)
-    benchmarked against vector-only and hybrid retrieval.
+-   [ ] Agentic RAG: an LLM tool loop over `search_code`, `read_file`
+    and `grep`, benchmarked against single-shot RAG and a grep-only
+    agent (how Claude Code searches).
+-   [ ] An MCP server exposing the same tools, so any MCP client can
+    query an indexed repository.
 -   [ ] Verified file and line citations that open the exact source
     location.
 -   [ ] A repeatable evaluation dataset with published results.
@@ -64,7 +70,8 @@ and say when the repository does not contain enough information.
 | UI | Tailwind CSS, shadcn/ui | Consistent interface |
 | API | Python, FastAPI, Pydantic | REST endpoints and SSE streaming |
 | ORM / migrations | SQLAlchemy 2.x, Alembic | Database access and schema changes |
-| RAG orchestration | Plain Python (no framework) | Retrieval, fusion, prompting, citations — written by hand to show understanding |
+| Agent + RAG orchestration | Plain Python (no framework) | A `while` loop over the LLM's tool-calling API, plus retrieval, fusion, prompting, citations — written by hand to show understanding |
+| MCP | Official `mcp` Python SDK, mounted in FastAPI | Expose the agent's tools to other AI assistants |
 | Python environment | uv (workspace) | Dependencies, lockfile, virtualenv |
 | Code parsing | Tree-sitter | Parse code into functions/classes |
 | Vector search | PostgreSQL + pgvector (HNSW index) | Store and retrieve embeddings |
@@ -72,7 +79,7 @@ and say when the repository does not contain enough information.
 | Background jobs | BullMQ (Python package) + Redis | Async indexing in a separate Python worker service |
 | Repository storage | Local disk initially; S3 if needed | Repository snapshots (commit tarballs) |
 | Answer generation | OpenRouter (OpenAI-compatible API) | Compare LLMs through one API |
-| Embeddings | Local code-tuned embedding model | Avoid per-token charges; compare two models in evaluation |
+| Embeddings | Google `gemini-embedding-2` (1536 dims) via `google-genai`; a local code-tuned model (jina-embeddings-v2-base-code) added later | Gemini first (free tier, no model to host); compare it with the local model in evaluation |
 | Authentication | GitHub OAuth (GitHub App) + JWT | Sign-in and repository access |
 | Testing | pytest, HTTPX, frontend tests | Unit and integration tests |
 | Containers | Docker, Docker Compose | Reproducible local environment |
@@ -106,14 +113,15 @@ flowchart TD
     R --> W[Python worker service]
     W --> GH[GitHub commit tarball]
     W --> PARSE[Tree-sitter parsing + chunking]
-    PARSE --> EMB[Local embedding model]
+    PARSE --> EMB[Gemini embedding API]
     EMB --> DB
-    API --> RET[Hybrid / agentic retrieval]
-    RET --> DB
-    RET --> CTX[Context assembly + chunk-ID citations]
-    CTX --> LLM[OpenRouter LLM]
-    LLM --> API
-    API -->|SSE stream| FE
+    API --> AGENT[Agent loop + chunk-ID citations]
+    AGENT <--> LLM[OpenRouter LLM]
+    AGENT --> TOOLS[Tools: search_code, read_file, grep]
+    TOOLS --> DB
+    EXT[Claude Code / Claude Desktop / Cursor] --> MCP[MCP server]
+    MCP --> TOOLS
+    API -->|SSE stream: agent steps + answer| FE
 ```
 
 ### Request flow
@@ -127,12 +135,15 @@ flowchart TD
     are embedded and keyword-indexed.
 5.  Chunks, embeddings, tsvectors, commit SHA, paths, and line ranges
     are stored in PostgreSQL.
-6.  A question triggers hybrid (or agentic) retrieval and context
-    assembly within a token budget.
-7.  The LLM answers using retrieved evidence and cites chunk IDs; the
-    API maps them to file paths and line ranges.
-8.  Logs record retrieval configuration, latency, token usage, and user
-    feedback.
+6.  A question starts the agent loop: the LLM calls tools
+    (`search_code`, `read_file`, `grep`), reads the results and decides
+    what to look up next, within a step limit and a token budget.
+7.  The LLM answers using the evidence the tools returned and cites
+    chunk IDs; the API maps them to file paths and line ranges.
+8.  MCP clients call the same tools directly; their own LLM does the
+    reasoning.
+9.  Logs record retrieval configuration, agent steps, latency, token
+    usage, and user feedback.
 
 ## 4. Data model
 
@@ -190,7 +201,8 @@ documented commands.
 -   [ ] Split oversized functions and merge tiny ones.
 -   [ ] Prepend a contextual header to each chunk before embedding: file
     path, language, class name, and function signature/docstring.
--   [ ] Generate embeddings with a local code-tuned embedding model.
+-   [ ] Generate embeddings with `gemini-embedding-2` at 1536 dims,
+    stored in `chunk_embeddings` keyed by (content_hash, model).
 -   [ ] Build the keyword index with identifier splitting
     (`getCurrentUser` → `get current user getcurrentuser`,
     `get_current_user` → `get current user get_current_user`).
@@ -205,31 +217,50 @@ documented commands.
 **Exit criteria:** A public repository is indexed and its files/chunks
 can be inspected.
 
-### Phase 2 --- First working RAG chat
+### Phase 2 --- First working agentic RAG chat + MCP
 
 -   [ ] Implement vector similarity retrieval.
 -   [ ] Implement PostgreSQL full-text search for identifiers and
     symbols.
 -   [ ] Fuse results with Reciprocal Rank Fusion (RRF).
 -   [ ] Add repository and metadata filters.
--   [ ] Assemble context within a token budget.
--   [ ] Call the LLM through OpenRouter.
--   [ ] Label each context chunk with an ID (`[c1]`, `[c2]`, ...); the
-    LLM cites IDs, and the API maps them to repository, path, line
-    range, and commit SHA. Reject citations to chunks not in context.
+-   [ ] Build three tools over the current snapshot, all reading
+    PostgreSQL (no clone, no extra file storage):
+    -   `search_code(query)`: the hybrid search above.
+    -   `read_file(path, start, end)`: rebuilds the lines from the
+        file's chunks in order (chunks cover every non-blank line).
+    -   `grep(pattern)`: PostgreSQL regex (`content ~ pattern`) over
+        the snapshot's chunks.
+-   [ ] Build the agent loop: a plain `while` loop over the LLM's
+    tool-calling API (no framework), with a step limit and a token
+    budget. Single-shot RAG is the same loop with only `search_code`
+    and one step; it stays as the baseline.
+-   [ ] Call the LLM through OpenRouter (a model with tool calling).
+-   [ ] Label each chunk a tool returns with an ID (`[c1]`, `[c2]`,
+    ...); the LLM cites IDs, and the API maps them to repository, path,
+    line range, and commit SHA. Reject citations to chunks the agent
+    never saw.
 -   [ ] Require evidence-based answers and abstention when evidence is
     insufficient.
--   [ ] Basic prompt-injection defence: wrap repository content as
-    untrusted data and state this in the system prompt.
--   [ ] Build a chat UI with SSE streaming and clickable citations
-    (GitHub permalink: `blob/<sha>/<path>#L10-L20`, or an in-app code
-    viewer).
+-   [ ] Basic prompt-injection defence: wrap tool results (repository
+    content) as untrusted data and state this in the system prompt.
+-   [ ] Build a chat UI with SSE streaming of the agent's steps
+    ("Searching...", "Reading main.py:10-30") and the answer, with
+    clickable citations (GitHub permalink: `blob/<sha>/<path>#L10-L20`,
+    or an in-app code viewer).
 -   [ ] Persist conversations and messages in PostgreSQL.
--   [ ] Add tests for citation mapping, missing evidence, and retrieval
-    boundaries.
+-   [ ] Log every tool call: the query, the chunks returned, and whether
+    the answer used any of them. Track zero-result and unused-result
+    queries; they become Phase 3 benchmark questions.
+-   [ ] Expose the same three tools as an MCP server (official `mcp`
+    Python SDK, mounted in FastAPI). Public repositories only; test it
+    from Claude Code or Claude Desktop.
+-   [ ] Add tests for citation mapping, missing evidence, retrieval
+    boundaries, and the step limit.
 
 **Exit criteria:** A user can ask an MVP question about an indexed
-repository and verify the answer against the source.
+repository and verify the answer against the source, and an MCP client
+can call the same tools.
 
 ### Phase 3 --- RAG evaluation
 
@@ -241,11 +272,15 @@ repository and verify the answer against the source.
 -   [ ] Measure Recall@5 and MRR (add nDCG if ranking comparisons are
     useful).
 -   [ ] Measure answer correctness and citation correctness through
-    manual review.
+    manual review. Optional: Ragas or DeepEval as an automatic
+    groundedness judge if grading every strategy by hand becomes the
+    bottleneck (spot-check it against the manual grades).
 -   [ ] Track latency and token usage/cost per query.
--   [ ] Compare retrieval strategies: vector-only vs hybrid (RRF) vs
-    agentic retrieval (LLM tool loop with `search_code`, `grep`,
-    `read_file`, `list_symbols`).
+-   [ ] Compare strategies, all on the same agent loop with different
+    tools: single-shot RAG (`search_code`, one step) vs grep-only agent
+    (`grep` + `read_file`, how Claude Code searches) vs full agent
+    (all three tools). Also vector-only vs hybrid (RRF) inside
+    `search_code`.
 -   [ ] Compare chunking approaches, top-k values, and two embedding
     models.
 -   [ ] Test a second, unfamiliar open-source repository.
@@ -285,7 +320,7 @@ and never expose provider tokens to the browser.
 -   [ ] Add reranking only if benchmark results justify it.
 -   [ ] Build an import/reference graph for selected languages.
 -   [ ] Add symbol and call lookup to support trace and impact
-    questions.
+    questions, as a new agent tool (`find_references`).
 -   [ ] Re-index when new commits arrive (GitHub compare API or
     webhook), reusing unchanged chunks by content hash.
 -   [ ] Show indexing progress and failures in the UI.
@@ -375,9 +410,10 @@ still be explained incorrectly by the LLM.
 
 | Experiment | Compare |
 |---|---|
-| Retrieval strategy | Vector-only vs hybrid (RRF) vs agentic |
+| Answer strategy | Single-shot RAG vs grep-only agent vs full agent (search_code + read_file + grep) |
+| Retrieval inside `search_code` | Vector-only vs hybrid (RRF) |
 | Chunking | Function/class + header vs function/class without header vs fixed-size |
-| Embedding model | Two code-tuned models |
+| Embedding model | Gemini (`gemini-embedding-2`) vs local (jina-embeddings-v2-base-code) |
 | Top-k | 5 vs 10 vs 20 |
 
 ## 7. Cost strategy
@@ -385,7 +421,9 @@ still be explained incorrectly by the LLM.
 ### Development
 
 -   [ ] Run PostgreSQL/pgvector and Redis locally in Docker.
--   [ ] Use local embeddings to avoid embedding API charges.
+-   [ ] Use the Gemini embedding free tier in development (inputs may be
+    used by Google, so public repositories only); paid tier or the local
+    model for private repositories.
 -   [ ] Use OpenRouter for answer generation with a small prepaid
     budget.
 -   [ ] Set usage limits where available and inspect per-model pricing
@@ -541,7 +579,7 @@ uv export --format requirements-txt > requirements.txt
 Use this only after implementing and validating the corresponding
 features.
 
-**Codebase Intelligence Assistant --- Full-Stack RAG Application**\
+**Codebase Intelligence Assistant --- Full-Stack Agentic RAG Application**\
 *Next.js, TypeScript, FastAPI, Python, SQLAlchemy, PostgreSQL, pgvector,
 Tree-sitter, Redis, BullMQ, Docker, GitHub Actions, AWS*
 
@@ -549,8 +587,12 @@ Tree-sitter, Redis, BullMQ, Docker, GitHub Actions, AWS*
     answers developer questions with verified file- and line-level
     citations.
 -   Implemented AST-aware code chunking and hybrid retrieval (vector
-    similarity + identifier-aware full-text search fused with RRF), and
-    benchmarked it against vector-only and agentic retrieval.
+    similarity + identifier-aware full-text search fused with RRF).
+-   Built an AI agent (hand-written LLM tool loop over `search_code`,
+    `read_file` and `grep`) and benchmarked it against single-shot RAG
+    and a grep-only agent.
+-   Exposed the retrieval tools as an MCP server usable from Claude
+    Code, Claude Desktop and Cursor.
 -   Designed an asynchronous ingestion pipeline: FastAPI API and a
     separate Python worker service over Redis/BullMQ, independently
     scalable.
