@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     MetaData,
     String,
     Text,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Postgres 18 built-in: time-ordered UUIDs keep primary-key indexes compact.
@@ -79,7 +81,12 @@ class Chunk(Base):
     # Chunks never overlap, so only one starts on a given line of a file. The index
     # (snapshot_id first) also serves "all chunks of this snapshot": every search
     # and the delete before a retry filter on it.
-    __table_args__ = (UniqueConstraint("snapshot_id", "path", "start_line"),)
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "path", "start_line"),
+        # GIN: an inverted index (word -> rows), so keyword search looks a word up
+        # instead of reading every chunk
+        Index("ix_chunks_search_tsv", "search_tsv", postgresql_using="gin"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=UUIDV7)
     snapshot_id: Mapped[uuid.UUID] = mapped_column(
@@ -99,6 +106,10 @@ class Chunk(Base):
     # sha256 hex of the text that gets embedded (path > symbol, signature, content):
     # the same hash in a later commit means the existing vector is reused
     content_hash: Mapped[str] = mapped_column(String(64))
+    # Text search vector for keyword search: each word of the embed text (names
+    # split into parts by chunking.split_identifiers) with its positions, e.g.
+    # 'get':4,8 'getuser':6,10. Built by Postgres to_tsvector('simple', ...) on insert.
+    search_tsv: Mapped[str] = mapped_column(TSVECTOR)
 
 
 class ChunkEmbedding(Base):

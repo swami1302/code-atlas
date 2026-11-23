@@ -1,4 +1,5 @@
 import itertools
+import re
 from dataclasses import dataclass, replace
 
 import tree_sitter_javascript
@@ -228,6 +229,29 @@ def embed_text(path: str, chunk: Chunk) -> str:
     return "\n".join(filter(None, [header, chunk.signature, chunk.content]))
 
 
+# One name or word: get_current_user, getCurrentUser, HTTPServer, 429
+WORD = re.compile(r"\w+")
+# The parts of a name: an acronym (HTTP), a word (Server, get) or a run of digits
+PART = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def split_identifiers(text: str) -> str:
+    """Text as plain lowercase words for the keyword index. A name gives its parts,
+    then the parts joined: getCurrentUser and get_current_user both become
+    "get current user getcurrentuser", so a search for either spelling, or for
+    "current user", finds both. Punctuation is dropped, so Postgres only sees plain
+    words (its parser would read os.path.join as one host name)."""
+    words = []
+    for word in WORD.findall(text):
+        parts = PART.findall(word)
+        if len(parts) > 1:
+            words += [part.lower() for part in parts]
+        # Underscores dropped: __init__ is init, get_user joins to getuser
+        if joined := word.replace("_", "").lower():
+            words.append(joined)
+    return " ".join(words)
+
+
 if __name__ == "__main__":
     # Self-check: python chunking.py
 
@@ -306,4 +330,17 @@ class A { public function m() {} }
         "a.py > big\ndef big(\n    a,\n):\n"
     )
     assert embed_text("README.md", Chunk(1, 1, "# Hi")) == "README.md\n# Hi"
+
+    # Keyword text: both spellings of a name give the same words
+    assert split_identifiers("getCurrentUser") == "get current user getcurrentuser"
+    assert split_identifiers("get_current_user") == "get current user getcurrentuser"
+    assert split_identifiers("HTTPServer utf8") == "http server httpserver utf 8 utf8"
+    assert (
+        split_identifiers("backend/indexing.py > save_chunks")
+        == "backend indexing py save chunks savechunks"
+    )
+    assert split_identifiers("def __init__(self): return 429") == (
+        "def init self return 429"
+    )
+    assert split_identifiers("# Café") == "café"
     print("chunking: ok")

@@ -9,7 +9,15 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from bullmq import UnrecoverableError
-from sqlalchemy import delete, exists, insert, select
+from sqlalchemy import (
+    bindparam,
+    delete,
+    exists,
+    func,
+    insert,
+    literal_column,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # A module import: chunking.Chunk (a piece of a file) would clash with models.Chunk
@@ -135,25 +143,37 @@ async def save_chunks(
 ) -> None:
     """Replace this snapshot's chunk rows in one transaction: all rows land or none.
     Deleting first makes a retry safe after an attempt that crashed halfway."""
-    rows = [
-        {
-            "snapshot_id": snapshot_id,
-            "path": path,
-            "language": language,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-            "symbol": chunk.symbol,
-            "kind": chunk.kind,
-            "signature": chunk.signature,
-            "content": chunk.content,
-            "content_hash": content_hash(chunking.embed_text(path, chunk)),
-        }
-        for path, language, chunk in chunks
-    ]
+    rows = []
+    for path, language, chunk in chunks:
+        text = chunking.embed_text(path, chunk)
+        rows.append(
+            {
+                "snapshot_id": snapshot_id,
+                "path": path,
+                "language": language,
+                "start_line": chunk.start_line,
+                "end_line": chunk.end_line,
+                "symbol": chunk.symbol,
+                "kind": chunk.kind,
+                "signature": chunk.signature,
+                "content": chunk.content,
+                "content_hash": content_hash(text),
+                # Not a column: the input Postgres turns into search_tsv below
+                "search_text": chunking.split_identifiers(text),
+            }
+        )
+    # Every row's search_tsv is built in SQL from its own search_text. 'simple' is
+    # written into the SQL, not sent as a parameter: asyncpg would send it as
+    # varchar, and to_tsvector only accepts a regconfig (a text search config name).
+    statement = insert(Chunk).values(
+        search_tsv=func.to_tsvector(
+            literal_column("'simple'"), bindparam("search_text")
+        )
+    )
     async with SessionLocal() as session:
         await session.execute(delete(Chunk).where(Chunk.snapshot_id == snapshot_id))
         if rows:  # a bulk insert needs at least one row (a repo of only binaries)
-            await session.execute(insert(Chunk), rows)
+            await session.execute(statement, rows)
         await session.commit()
 
 
